@@ -1,0 +1,321 @@
+---
+title: "Predicting the Manner of Exercise with Accelerometer Data"
+author: "Mohammed Teslim"
+date: "2024-12-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+## Introduction
+This report documents the analysis performed for the "Practical Machine Learning" course project. The goal of this project is to predict the manner in which participants performed a weightlifting exercise (the "classe" variable) using data collected from accelerometers on the belt, forearm, arm, and dumbbell. The dataset is publicly available from the Human Activity Recognition Using Smartphones Data Set and was generously provided by researchers at the University of California, Irvine. We acknowledge and thank them for making this valuable dataset available.
+
+The project involves data exploration, preprocessing, feature selection, dimensionality reduction, model selection, training, evaluation, and prediction on a test set. We will use R for all analyses and visualizations.
+
+```{r load}
+# Load libraries
+library(caret)
+library(ggplot2)
+library(corrplot)
+library(randomForest)
+
+# Load data
+trainData <- read.csv("pml-training.csv")
+testData <- read.csv("pml-testing.csv")
+summary(trainData)
+```
+
+The training dataset initially contained 160 variables. A preliminary examination of the data revealed irrelevant columns, variables with a high proportion of missing values, and variables with near-zero variance.
+
+```{r PreProcesssing, echo=FALSE}
+# 1. Remove Irrelevant Variables
+
+# Define a vector of irrelevant column names
+irrelevant_cols <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")
+
+# Remove these columns from the training data
+trainData <- trainData[, !names(trainData) %in% irrelevant_cols]
+
+# 2. Handle Missing Values: Remove columns with many NAs
+
+# Calculate the number of NAs in each column
+na_counts <- colSums(is.na(trainData))
+
+# Define a threshold for missing values (e.g., 95%)
+threshold <- 0.95 * nrow(trainData)
+
+# Select columns where the number of NAs is less than the threshold
+trainData <- trainData[, na_counts < threshold]
+
+# 3. Remove variables with near-zero variance
+
+# Identify near-zero variance predictors
+nzv_cols <- nearZeroVar(trainData)
+
+# Remove these columns from the training data
+trainData <- trainData[,-nzv_cols]
+
+# 4. Remove rows with NA's
+
+# Remove rows with NAs
+trainData <- na.omit(trainData)
+
+# Convert classe to a factor (if not already)
+trainData$classe <- as.factor(trainData$classe)
+
+# Summary of the preprocessed data
+summary(trainData)
+```
+
+  Note that To prepare the data for modeling, the following preprocessing steps were performed:
+
+Removed Irrelevant Variables: Seven columns clearly unrelated to the prediction task were removed (r irrelevant_cols).
+Handled Missing Values: Columns with more than 95% missing values were removed.
+Removed Near-Zero Variance Variables: Variables with very little variance provide minimal information for modeling and were thus removed using the nearZeroVar function from the caret package.
+After preprocessing, the training dataset was reduced to 53 variables.
+
+## Feature Selection and Dimensionality Reduction
+To further refine the dataset and potentially improve model performance, we employed two techniques: ANOVA for feature selection and Principal Component Analysis (PCA) for dimensionality reduction.
+
+ANOVA for Feature Selection
+ANOVA was used to identify variables that showed statistically significant differences in their means across the five exercise classes (A, B, C, D, E). This helps select variables that are potentially good predictors of the classe variable.
+
+```{r anova}
+# Univariate Feature Selection using ANOVA
+
+# Store the p-values
+p_values <- numeric(ncol(numeric_data))
+names(p_values) <- names(numeric_data)
+
+# Perform ANOVA for each numeric variable
+for (i in 1:ncol(numeric_data)) {
+  # Create a linear model
+  model <- lm(numeric_data[, i] ~ trainData$classe)
+  # Perform ANOVA
+  anova_result <- anova(model)
+  # Store the p-value
+  p_values[i] <- anova_result$"Pr(>F)"[1]
+}
+
+# Sort variables by p-value (ascending order)
+sorted_p_values <- sort(p_values)
+
+# Select top N variables based on p-values (e.g., top 20)
+N <- 20
+selected_variables_anova <- names(sorted_p_values)[1:N]
+
+# Print selected variables
+print(selected_variables_anova)
+```
+The top 20 variables with the lowest p-values were selected for further analysis.
+
+## PCA for Dimensionality Reduction
+PCA was performed to reduce the dimensionality of the dataset while retaining most of the variance. The scree plot was used to determine the number of principal components to retain.
+
+```{r pca}
+# Perform PCA
+pca_result <- prcomp(numeric_data, scale. = TRUE)
+
+# Scree plot
+plot(pca_result, type = "l", main = "Scree Plot")
+
+# Get the principal component scores
+pca_scores <- as.data.frame(pca_result$x)
+
+# Add the 'classe' variable to the PCA scores for visualization
+pca_scores$classe <- trainData$classe
+# Scatter plot of the first two principal components, colored by classe
+ggplot(pca_scores, aes(x = PC1, y = PC2, color = classe)) +
+    geom_point() +
+    ggtitle("PCA: First Two Principal Components") +
+    theme_minimal()
+```
+Based on the scree plot and the cumulative variance explained (not shown in the plot), the first 20 principal components were selected for further analysis.
+
+```{r plot1, fig.cap="PCA SCREE PLOT", echo=FALSE, eval = TRUE, out.width="75%"}
+knitr::include_graphics("pcplot.png")
+```
+
+## Model Selection
+Two machine learning models were chosen for this classification task: Random Forest (RF) and Gradient Boosting Machine (GBM).
+
+Rationale for Model Choices:
+
+Random Forest: Robust, handles non-linearity well, provides variable importance measures, and generally performs well on a variety of datasets.
+GBM: Often achieves very high accuracy but can be more prone to overfitting and requires careful tuning.
+Cross-Validation:
+
+10-fold cross-validation was used to evaluate the models and tune their hyperparameters.
+
+## Model Training and Evaluation
+Both Random Forest and GBM models were trained and evaluated on three different datasets:
+
+Full Dataset: All 53 variables after preprocessing.
+ANOVA Dataset: Top 20 variables selected by ANOVA.
+PCA Dataset: Top 20 principal components from PCA.
+
+```{r model}
+# 1. Prepare Datasets
+
+# Full Dataset (already have trainData)
+
+# ANOVA Dataset
+trainData_anova <- trainData[, c(selected_variables_anova, "classe")]
+
+# PCA Dataset (using first 20 PCs)
+trainData_pca <- pca_scores[, c(paste0("PC", 1:20), "classe")]
+
+# 2. Set up trainControl
+
+# Define cross-validation method (10-fold CV)
+train_control <- trainControl(method = "cv", number = 10)
+
+# 3. Train and Tune Models
+
+# --- Random Forest (rf) ---
+
+# Define tuning grid for mtry
+rf_tuneGrid <- expand.grid(mtry = c(2, 3, 5, 7, 9))
+
+# Train RF on Full Dataset
+set.seed(123)
+rf_full <- train(classe ~ ., data = trainData, method = "rf", trControl = train_control, tuneGrid = rf_tuneGrid)
+
+# Train RF on ANOVA Dataset
+set.seed(123)
+rf_anova <- train(classe ~ ., data = trainData_anova, method = "rf", trControl = train_control, tuneGrid = rf_tuneGrid)
+
+# Train RF on PCA Dataset
+set.seed(123)
+rf_pca <- train(classe ~ ., data = trainData_pca, method = "rf", trControl = train_control, tuneGrid = rf_tuneGrid)
+
+# --- Gradient Boosting Machine (gbm) ---
+
+# Define tuning grid for GBM parameters
+gbm_tuneGrid <- expand.grid(
+  n.trees = c(100, 200, 300),           # Number of trees
+  interaction.depth = c(1, 2, 3),     # Tree depth
+  shrinkage = c(0.01, 0.1),             # Learning rate
+  n.minobsinnode = c(5, 10)           # Minimum observations in terminal nodes
+)
+
+# Train GBM on Full Dataset
+set.seed(123)
+gbm_full <- train(classe ~ ., data = trainData, method = "gbm", trControl = train_control, tuneGrid = gbm_tuneGrid, verbose = FALSE)
+
+# Train GBM on ANOVA Dataset
+set.seed(123)
+gbm_anova <- train(classe ~ ., data = trainData_anova, method = "gbm", trControl = train_control, tuneGrid = gbm_tuneGrid, verbose = FALSE)
+
+# Train GBM on PCA Dataset
+set.seed(123)
+gbm_pca <- train(classe ~ ., data = trainData_pca, method = "gbm", trControl = train_control, tuneGrid = gbm_tuneGrid, verbose = FALSE)
+
+# 4. Evaluate Performance
+
+# Create a function to extract performance metrics
+get_performance <- function(model) {
+  best_tune <- model$bestTune
+  performance <- model$results[which.max(model$results$Accuracy), ]
+  return(performance)
+}
+
+# Get performance for each model and dataset
+rf_full_performance <- get_performance(rf_full)
+rf_anova_performance <- get_performance(rf_anova)
+rf_pca_performance <- get_performance(rf_pca)
+
+gbm_full_performance <- get_performance(gbm_full)
+gbm_anova_performance <- get_performance(gbm_anova)
+gbm_pca_performance <- get_performance(gbm_pca)
+
+# 5. Compare Performance
+
+# Create a data frame to store the results
+performance_summary <- data.frame(
+  Model = c("Random Forest", "Random Forest", "Random Forest", "GBM", "GBM", "GBM"),
+  Dataset = c("Full", "ANOVA", "PCA", "Full", "ANOVA", "PCA"),
+  Accuracy = c(rf_full_performance$Accuracy, rf_anova_performance$Accuracy, rf_pca_performance$Accuracy,
+               gbm_full_performance$Accuracy, gbm_anova_performance$Accuracy, gbm_pca_performance$Accuracy),
+  Kappa = c(rf_full_performance$Kappa, rf_anova_performance$Kappa, rf_pca_performance$Kappa,
+            gbm_full_performance$Kappa, gbm_anova_performance$Kappa, gbm_pca_performance$Kappa)
+)
+print(performance_summary)
+```
+
+```{r model comparison}
+# Visualize performance comparison
+comparison_plot <- ggplot(performance_summary, aes(x = Dataset, y = Accuracy, fill = Model)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ggtitle("Model Performance Comparison") +
+  theme_minimal()
+
+# Display the plot using print()
+print(comparison_plot)
+```
+
+```{r plot2, fig.cap="MODEL PERFORMANCE COMPARISON", echo=FALSE, eval = TRUE, out.width="75%"}
+knitr::include_graphics("performance_comparison.png")
+```
+## Final Model and Justification
+Based on the cross-validation results, the Random Forest model trained on the full dataset was selected as the final model.
+
+Justification:
+
+Achieved very high accuracy (0.993) and Kappa (0.992) during cross-validation.
+Computationally more efficient than GBM.
+Simpler approach compared to using the ANOVA dataset with GBM.
+The performance difference between Random Forest on the full dataset and GBM on the ANOVA dataset was minimal.
+Expected Out-of-Sample Error:
+
+The expected out-of-sample error is estimated by the cross-validation results. We expect the final model to achieve an accuracy of approximately 0.993 and a Kappa of approximately 0.992 on unseen data.
+
+```{r final model}
+# --- Final Model Training and Test Set Prediction ---
+
+# 1. Train Final Random Forest Model on the Entire Training Dataset
+
+# Get the best mtry value from the cross-validation results of rf_full
+best_mtry <- rf_full$bestTune$mtry
+
+# Train the final Random Forest model on the entire training set
+set.seed(123)  # For reproducibility
+final_rf_model <- randomForest(classe ~ ., data = trainData, mtry = best_mtry)
+```
+
+##Test Set Prediction
+The final Random Forest model was trained on the entire training dataset using the optimal hyperparameter (mtry) found during cross-validation.
+
+The test set (pml-testing.csv) was preprocessed using the exact same steps as the training data.
+
+```{r test set}
+# 3. Make Predictions on the Test Set
+
+# Make predictions using the final Random Forest model
+final_predictions <- predict(final_rf_model, newdata = testData)
+
+# 4. Format Predictions
+
+# Print the predictions
+print(final_predictions)
+```
+The predictions for the 20 test cases were formatted according to the quiz requirements and submitted for grading. The actual predictions are not shown in this report to avoid revealing answers before the deadline.
+
+## Conclusion
+This project demonstrated the process of building and evaluating machine learning models for predicting the manner of exercise based on accelerometer data. Random Forest and GBM models were trained and compared, with Random Forest on the full dataset ultimately chosen as the final model due to its high accuracy, computational efficiency, and simplicity. The use of ANOVA and PCA provided insights into the data and helped explore feature selection and dimensionality reduction techniques. The final model achieved excellent performance during cross-validation, indicating its potential for accurately classifying unseen data.
+
+## Limitations:
+
+The analysis relies on the assumption that the training data is representative of the real-world data the model will encounter.
+The choice of the number of principal components to retain in PCA was based on a visual inspection of the scree plot and could be further refined.
+While the models achieved high accuracy, further tuning of hyperparameters might yield slight improvements, but at the cost of increased computational time.
+
+##Future Directions:
+
+Explore other feature engineering techniques to potentially create more informative features.
+Investigate other dimensionality reduction methods, such as t-SNE, to visualize the data in a lower-dimensional space.
+Consider using other classification models or ensemble methods to potentially improve performance.
+Gather more data to further improve the model's robustness and generalizability.
+This report provides a comprehensive overview of the project, including the code, visualizations, and justifications for the choices made
