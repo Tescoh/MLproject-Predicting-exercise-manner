@@ -18,7 +18,7 @@ The analysis includes data exploration, preprocessing, feature selection using A
 
 The compiled HTML report can be viewed online here:
 
-[https://Tescoh.github.io/MLproject-Predicting-exercise-manner/Report.html]
+[Predicting_exercise_manner](https://Tescoh.github.io/MLproject-Predicting-exercise-manner/Report.html)
 
 
 ## Reproducing the Analysis
